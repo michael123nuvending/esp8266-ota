@@ -1,0 +1,22 @@
+# PlatformIO
+firmware/.pio/
+firmware/.vscode/
+
+# Secrets — NEVER commit these
+firmware/include/config.h
+**/config.h
+!**/config.example.h
+
+# Build artifacts
+release/
+*.bin
+*.elf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
