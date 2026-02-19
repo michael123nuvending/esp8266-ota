@@ -364,7 +364,7 @@ If someone on your team doesn't have Git installed or isn't comfortable with the
 
 **Step 1: Edit the code on GitHub**
 
-1. Go to your repo: `https://github.com/YOUR_USERNAME/esp8266-ota`
+1. Go to your repo: `https://github.com/michael123nuvending/esp8266-ota`
 2. Click `esp8266_ota_firmware/` folder
 3. Click `esp8266_ota_firmware.ino`
 4. Click the **pencil icon** ✏️ (top right of the file) to edit
