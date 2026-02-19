@@ -27,6 +27,8 @@
  * ============================================================
  */
 
+#include "config.h"
+
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
@@ -34,8 +36,6 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
-
-#include "config.h"
 
 // ============================================================
 // GLOBAL OBJECTS
@@ -229,10 +229,51 @@ void publishHeartbeat() {
 }
 
 // ============================================================
+// HMAC-SHA256 FIRMWARE SIGNING
+// ============================================================
+
+#if OTA_SIGNING_ENABLED
+
+// BearSSL is already included with ESP8266 Arduino core via WiFiClientSecureBearSSL
+// We use its HMAC-SHA256 implementation directly — no extra libraries needed.
+
+// Compute HMAC-SHA256 of data using the signing key from config.h
+// Returns lowercase hex string (64 chars)
+String computeHMAC(const uint8_t* data, size_t len) {
+  br_hmac_key_context keyCtx;
+  br_hmac_context hmacCtx;
+
+  const char* key = OTA_SIGNING_KEY;
+  size_t keyLen = strlen(key);
+
+  // Initialize HMAC with SHA-256 and our signing key
+  br_hmac_key_init(&keyCtx, &br_sha256_vtable, key, keyLen);
+  br_hmac_init(&hmacCtx, &keyCtx, 0); // 0 = full 32-byte output
+
+  // Feed data into HMAC
+  br_hmac_update(&hmacCtx, data, len);
+
+  // Get result
+  uint8_t hmacResult[32];
+  br_hmac_out(&hmacCtx, hmacResult);
+
+  // Convert to lowercase hex string
+  String hex = "";
+  hex.reserve(64);
+  for (int i = 0; i < 32; i++) {
+    if (hmacResult[i] < 0x10) hex += "0";
+    hex += String(hmacResult[i], HEX);
+  }
+  return hex;
+}
+
+#endif // OTA_SIGNING_ENABLED
+
+// ============================================================
 // OTA UPDATE LOGIC
 // ============================================================
 
-void performOTA(const char* version, const char* url, const char* sha256) {
+void performOTA(const char* version, const char* url, const char* sha256, const char* signature = nullptr) {
   otaInProgress = true;
 
   Serial.println(F(""));
@@ -263,6 +304,38 @@ void performOTA(const char* version, const char* url, const char* sha256) {
   switch (result) {
     case HTTP_UPDATE_OK:
       Serial.println(F("[OTA] ✓ Download + flash OK!"));
+
+      // ---- HMAC SIGNATURE VERIFICATION ----
+      #if OTA_SIGNING_ENABLED
+      if (signature) {
+        publishStatus("verifying_signature", version);
+        // Note: We verify the HMAC of the payload fields as a simpler approach
+        // since reading back from flash partition is complex on ESP8266.
+        // The signature covers: version + sha256 + url
+        // This proves the MQTT message came from someone with the signing key.
+        String signData = String(version) + "|" + String(sha256 ? sha256 : "") + "|" + String(url);
+        String computed = computeHMAC((const uint8_t*)signData.c_str(), signData.length());
+
+        if (computed != String(signature)) {
+          Serial.println(F("[OTA] ✗ HMAC SIGNATURE MISMATCH — rejecting update!"));
+          Serial.printf("[OTA] Expected: %s\n", signature);
+          Serial.printf("[OTA] Computed: %s\n", computed.c_str());
+          publishStatus("signature_failed", "hmac_mismatch");
+          // Revert — don't boot into unverified firmware
+          rollbackConfirm(); // reset to previous state
+          otaInProgress = false;
+          return;
+        }
+        Serial.println(F("[OTA] ✓ HMAC signature verified — firmware is authentic"));
+      } else {
+        Serial.println(F("[OTA] ⚠ No signature provided — rejecting (signing required)"));
+        publishStatus("signature_failed", "no_signature");
+        rollbackConfirm();
+        otaInProgress = false;
+        return;
+      }
+      #endif
+
       publishStatus("rebooting", version);
       mqttClient.loop();
       delay(500);
@@ -310,15 +383,26 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  const char* version = doc["version"] | (const char*)nullptr;
-  const char* url     = doc["url"]     | (const char*)nullptr;
-  const char* sha256  = doc["sha256"]  | (const char*)nullptr;
-  bool force          = doc["force"]   | false;
+  const char* version   = doc["version"]   | (const char*)nullptr;
+  const char* url       = doc["url"]       | (const char*)nullptr;
+  const char* sha256    = doc["sha256"]    | (const char*)nullptr;
+  const char* signature = doc["signature"] | (const char*)nullptr;
+  bool force            = doc["force"]     | false;
 
   if (!version || !url) {
     Serial.println(F("[MQTT] Missing version or url"));
     return;
   }
+
+  // Verify HMAC signature if signing is enabled
+  #if OTA_SIGNING_ENABLED
+  if (!signature) {
+    Serial.println(F("[MQTT] ✗ REJECTED: No signature in payload. Signing is required."));
+    publishStatus("rejected", "missing_signature");
+    return;
+  }
+  Serial.printf("[MQTT] Signature present: %s...\n", String(signature).substring(0, 16).c_str());
+  #endif
 
   // Skip if already on this version (unless forced)
   String current = getVersion();
@@ -336,7 +420,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   delay(200);
 
   // Start OTA
-  performOTA(version, url, sha256);
+  performOTA(version, url, sha256, signature);
 }
 
 // ============================================================

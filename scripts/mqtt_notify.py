@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-MQTT OTA Notification Script
+MQTT OTA Notification Script — with HMAC-SHA256 Firmware Signing
 
 Publishes an OTA update notification to MQTT so ESP8266 devices
 know a new firmware version is available.
 
-Used by GitHub Actions after a successful build + release.
+If OTA_SIGNING_KEY is set, the payload includes an HMAC-SHA256 signature
+that devices verify before accepting the update. This prevents unauthorized
+firmware from being pushed to devices.
 
 Usage:
     python mqtt_notify.py \
@@ -16,9 +18,12 @@ Usage:
 
 Environment variables (set as GitHub Secrets):
     MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD, MQTT_USE_TLS
+    OTA_SIGNING_KEY  — shared secret for HMAC signing (optional but recommended)
 """
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import ssl
@@ -41,6 +46,24 @@ def get_env(name: str, default: str = None) -> str:
 def build_firmware_url(repo: str, version: str) -> str:
     """Build the GitHub Releases download URL."""
     return f"https://github.com/{repo}/releases/download/v{version}/firmware.bin"
+
+
+def compute_hmac_signature(version: str, sha256: str, url: str, signing_key: str) -> str:
+    """
+    Compute HMAC-SHA256 signature over the OTA payload fields.
+
+    The signature covers: version|sha256|url
+    This proves the MQTT message was created by someone with the signing key.
+
+    The same computation happens on the ESP8266 to verify authenticity.
+    """
+    sign_data = f"{version}|{sha256}|{url}"
+    signature = hmac.new(
+        signing_key.encode('utf-8'),
+        sign_data.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    return signature
 
 
 def main():
@@ -71,16 +94,29 @@ def main():
         "repo": args.repo,
     }
 
+    # ---- HMAC SIGNING ----
+    signing_key = os.environ.get("OTA_SIGNING_KEY", "")
+    if signing_key:
+        signature = compute_hmac_signature(
+            args.version, args.sha256, firmware_url, signing_key
+        )
+        payload["signature"] = signature
+        print(f"Signature computed: {signature[:16]}...")
+        print(f"  Sign data: {args.version}|{args.sha256}|{firmware_url}")
+    else:
+        print("WARNING: OTA_SIGNING_KEY not set - payload will NOT be signed")
+        print("  Devices with signing enabled will REJECT this update!")
+
     # Determine MQTT topic based on target
     if args.device:
         topic = f"ota/device/{args.device}"
-        print(f"Target: single device → {args.device}")
+        print(f"Target: single device -> {args.device}")
     elif args.target == "fleet":
         topic = "ota/fleet/all"
         print("Target: entire fleet")
     else:
         topic = f"ota/group/{args.target}"
-        print(f"Target: group → {args.target}")
+        print(f"Target: group -> {args.target}")
 
     payload_json = json.dumps(payload, indent=2)
 
@@ -89,7 +125,7 @@ def main():
     print(f"URL:     {firmware_url}")
 
     if args.dry_run:
-        print("\n[DRY RUN] Not sending — exiting.")
+        print("\n[DRY RUN] Not sending - exiting.")
         return
 
     # ---- Connect to MQTT and publish ----
@@ -107,7 +143,6 @@ def main():
     if use_tls:
         client.tls_set(tls_version=ssl.PROTOCOL_TLSv1_2)
 
-    # Connection callback
     connected = False
 
     def on_connect(client, userdata, flags, rc):
@@ -124,7 +159,6 @@ def main():
         client.connect(broker, port, keepalive=30)
         client.loop_start()
 
-        # Wait for connection
         timeout = 15
         for i in range(timeout):
             if connected:
@@ -136,15 +170,18 @@ def main():
             print("ERROR: Could not connect to MQTT broker")
             sys.exit(1)
 
-        # Publish with QoS 1 (at least once delivery) and retain
         result = client.publish(topic, payload_json, qos=1, retain=True)
         result.wait_for_publish(timeout=10)
 
         if result.is_published():
-            print(f"\n✓ OTA notification published successfully!")
+            print(f"\nOTA notification published successfully!")
             print(f"  Topic:   {topic}")
             print(f"  Version: {args.version}")
             print(f"  SHA256:  {args.sha256[:16]}...")
+            if signing_key:
+                print(f"  Signed:  YES (HMAC-SHA256)")
+            else:
+                print(f"  Signed:  NO (no signing key)")
         else:
             print("ERROR: Failed to publish MQTT message")
             sys.exit(1)

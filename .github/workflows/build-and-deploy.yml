@@ -110,6 +110,9 @@ jobs:
           #define OTA_MAX_BOOT_FAILURES    3
           #define OTA_HEARTBEAT_INTERVAL   300000
 
+          #define OTA_SIGNING_KEY     "CI_BUILD_KEY"
+          #define OTA_SIGNING_ENABLED false
+
           #define EEPROM_SIZE              512
           #define EEPROM_ADDR_OTA_FLAG     0
           #define EEPROM_ADDR_BOOT_COUNT   1
@@ -237,6 +240,7 @@ jobs:
           MQTT_USERNAME: ${{ secrets.MQTT_USERNAME }}
           MQTT_PASSWORD: ${{ secrets.MQTT_PASSWORD }}
           MQTT_USE_TLS:  ${{ secrets.MQTT_USE_TLS }}
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
         run: |
           python scripts/mqtt_notify.py \
             --version "${{ needs.build.outputs.version }}" \
