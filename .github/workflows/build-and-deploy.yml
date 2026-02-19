@@ -72,13 +72,61 @@ jobs:
           arduino-cli lib install "PubSubClient"
           arduino-cli lib install "ArduinoJson"
 
-      - name: Inject version into config
+      - name: Generate CI config.h
         run: |
-          # Replace whatever version is in config.h with the tag version
-          sed -i 's/#define FIRMWARE_VERSION.*/#define FIRMWARE_VERSION    "${{ steps.version.outputs.version }}"/' \
-            esp8266_ota_firmware/config.h || true
-          echo "Config after version injection:"
-          grep FIRMWARE_VERSION esp8266_ota_firmware/config.h || echo "Using build flag instead"
+          cat > esp8266_ota_firmware/config.h << 'CONFIGEOF'
+          #ifndef CONFIG_H
+          #define CONFIG_H
+
+          #define DEVICE_ID           "esp-001"
+          #define DEVICE_GROUP        "production"
+
+          #define WIFI_SSID           "CI_BUILD"
+          #define WIFI_PASSWORD       "CI_BUILD"
+          #define WIFI_CONNECT_TIMEOUT_MS  15000
+
+          #define MQTT_BROKER         "ci.build.local"
+          #define MQTT_PORT           8883
+          #define MQTT_USE_TLS        true
+          #define MQTT_USERNAME       "ci"
+          #define MQTT_PASSWORD       "ci"
+          #define MQTT_KEEPALIVE      60
+          #define MQTT_BUFFER_SIZE    1024
+
+          #define TOPIC_OTA_DEVICE    "ota/device/" DEVICE_ID
+          #define TOPIC_OTA_GROUP     "ota/group/" DEVICE_GROUP
+          #define TOPIC_OTA_FLEET     "ota/fleet/all"
+          #define TOPIC_STATUS        "ota/status/" DEVICE_ID
+          #define TOPIC_HEARTBEAT     "ota/heartbeat/" DEVICE_ID
+
+          #define GITHUB_USER         "ci"
+          #define GITHUB_REPO         "ci"
+
+          #ifndef FIRMWARE_VERSION
+          #define FIRMWARE_VERSION    "0.0.0"
+          #endif
+
+          #define OTA_SELF_TEST_TIMEOUT_MS 60000
+          #define OTA_MAX_BOOT_FAILURES    3
+          #define OTA_HEARTBEAT_INTERVAL   300000
+
+          #define EEPROM_SIZE              512
+          #define EEPROM_ADDR_OTA_FLAG     0
+          #define EEPROM_ADDR_BOOT_COUNT   1
+          #define EEPROM_ADDR_FW_VERSION   2
+          #define EEPROM_ADDR_PREV_VERSION 18
+          #define EEPROM_ADDR_SHA256       34
+
+          #define OTA_STATE_CONFIRMED      0xAA
+          #define OTA_STATE_PENDING_VERIFY 0xBB
+          #define OTA_STATE_ROLLBACK       0xCC
+
+          #define LED_STATUS           LED_BUILTIN
+          #define LED_ACTIVE_LOW       true
+
+          #endif
+          CONFIGEOF
+          echo "Generated CI config.h"
 
       - name: Compile sketch
         run: |
