@@ -427,14 +427,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 // SELF-TEST
 // ============================================================
 
-// bool runSelfTest() {
-//   Serial.println(F("\n[Self-Test] Running..."));
-//   publishStatus("self_test_running");
-//   bool pass = true;
 bool runSelfTest() {
-  Serial.println(F("\n[Self-Test] INTENTIONALLY FAILING FOR ROLLBACK TEST"));
+  Serial.println(F("\n[Self-Test] Running..."));
   publishStatus("self_test_running");
-  bool pass = false;
+  bool pass = true;
+
 
   // Test 1: WiFi
   Serial.print(F("[Self-Test] WiFi... "));
