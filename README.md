@@ -364,7 +364,7 @@ If someone on your team doesn't have Git installed or isn't comfortable with the
 
 **Step 1: Edit the code on GitHub**
 
-1. Go to your repo: `https://github.com/michael123nuvending/esp8266-ota`
+1. Go to your repo: `https://github.com/YOUR_USERNAME/esp8266-ota`
 2. Click `esp8266_ota_firmware/` folder
 3. Click `esp8266_ota_firmware.ino`
 4. Click the **pencil icon** ✏️ (top right of the file) to edit
@@ -710,6 +710,169 @@ Each device needs a unique `DEVICE_ID` in its `config.h`:
 
 ---
 
+## Setting Up Firmware Signing (HMAC-SHA256)
+
+Firmware signing prevents anyone from pushing unauthorized firmware to your devices.
+Even if someone gains access to your MQTT broker, they can't update your devices without the secret signing key.
+
+```
+WITHOUT signing:                          WITH signing:
+  Attacker → MQTT → "update to           Attacker → MQTT → "update to
+  my-malicious-firmware.bin"              my-malicious-firmware.bin"
+  ESP8266: "OK, downloading..." ✗         ESP8266: "No valid signature,
+                                                    REJECTED!" ✓
+```
+
+### How it works:
+
+```
+GitHub Actions (has the key)              ESP8266 (has the same key)
+────────────────────────────              ──────────────────────────
+1. Builds firmware                        
+2. Creates string:                        
+   "1.2.0|sha256hash|download_url"        
+3. HMAC-SHA256(string, key) → signature   
+4. Sends via MQTT:                        
+   { version, url, sha256, signature } →  5. Receives MQTT message
+                                          6. Creates same string:
+                                             "1.2.0|sha256hash|download_url"
+                                          7. HMAC-SHA256(string, key) → signature
+                                          8. Compare signatures:
+                                             Match → accept update ✓
+                                             No match → REJECT ✗
+```
+
+### Step-by-step setup:
+
+**STEP 1: Generate a random signing key**
+
+Run this command on your computer:
+
+```bash
+openssl rand -hex 16
+```
+
+This outputs a 32-character hex string like:
+```
+a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
+```
+
+**Copy this key and save it somewhere safe.** You'll need it in the next two steps.
+
+> ⚠️ If you don't have `openssl`, you can use any random string generator.
+> The key just needs to be a random string. You can also use:
+> ```bash
+> python3 -c "import secrets; print(secrets.token_hex(16))"
+> ```
+
+**STEP 2: Add the key to your LOCAL `config.h`**
+
+Open `esp8266_ota_firmware/config.h` on your computer and find these lines:
+
+```c
+#define OTA_SIGNING_KEY     "CHANGE_ME_TO_A_RANDOM_32_HEX_STRING"
+#define OTA_SIGNING_ENABLED true    // set to false to disable signing checks
+```
+
+Change them to:
+
+```c
+#define OTA_SIGNING_KEY     "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"    // ← paste YOUR key here
+#define OTA_SIGNING_ENABLED true
+```
+
+**STEP 3: Re-flash your ESP8266 via USB (one time)**
+
+This is needed so the device knows the signing key.
+
+1. Connect ESP8266 via USB
+2. Open the `.ino` in Arduino IDE
+3. Click **Upload** (→ arrow)
+4. Open Serial Monitor — confirm `[MQTT] Connected!`
+
+After this, the device will **reject any unsigned updates**.
+
+**STEP 4: Add the key to GitHub Secrets**
+
+1. Go to your repo: `https://github.com/YOUR_USERNAME/esp8266-ota`
+2. Click **Settings** → **Secrets and variables** → **Actions**
+3. Click **"New repository secret"**
+4. Name: `OTA_SIGNING_KEY`
+5. Value: `a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6` (paste the SAME key from Step 1)
+6. Click **"Add secret"**
+
+You should now have **6 secrets** total:
+
+| Secret | Purpose |
+|--------|---------|
+| `MQTT_BROKER` | HiveMQ hostname |
+| `MQTT_PORT` | 8883 |
+| `MQTT_USERNAME` | HiveMQ username |
+| `MQTT_PASSWORD` | HiveMQ password |
+| `MQTT_USE_TLS` | true |
+| `OTA_SIGNING_KEY` | **NEW** — your firmware signing key |
+
+**STEP 5: Test it — push a signed update**
+
+```bash
+cd ~/Downloads/esp8266-ota-arduino
+git add .
+git commit -m "feat: enable HMAC signing"
+git tag v1.3.0
+git push origin main --tags
+```
+
+On your Serial Monitor you should now see:
+
+```
+[MQTT] Message on: ota/fleet/all
+[MQTT] Signature present: a1b2c3d4e5f6...
+[MQTT] Update available: v1.2.0 → v1.3.0
+
+╔══════════════════════════════════════╗
+║  OTA UPDATE: v1.2.0 → v1.3.0
+╚══════════════════════════════════════╝
+[OTA] Downloading...
+[OTA] ✓ Download + flash OK!
+[OTA] ✓ HMAC signature verified — firmware is authentic
+[OTA] Rebooting into new firmware...
+```
+
+If someone tries to send a fake update without the key:
+
+```
+[MQTT] Message on: ota/fleet/all
+[MQTT] ✗ REJECTED: No signature in payload. Signing is required.
+```
+
+Or with a wrong key:
+
+```
+[OTA] ✗ HMAC SIGNATURE MISMATCH — rejecting update!
+```
+
+### Disabling signing (if needed):
+
+If you want to go back to unsigned updates, change in your local `config.h`:
+
+```c
+#define OTA_SIGNING_ENABLED false
+```
+
+And re-flash via USB. The device will accept unsigned updates again.
+
+### Important rules about the signing key:
+
+| Rule | Why |
+|------|-----|
+| Key in `config.h` MUST match key in GitHub Secrets | Otherwise signature won't match |
+| NEVER push `config.h` to GitHub | Your signing key would be exposed |
+| If you change the key, you must re-flash ALL devices via USB | Devices need the new key to verify |
+| Keep a backup of your key | If you lose it, you'll need to USB-flash all devices again |
+| Use a different key per project | Don't reuse keys across different products |
+
+---
+
 ## Troubleshooting
 
 | Problem | Cause | Fix |
@@ -725,6 +888,9 @@ Each device needs a unique `DEVICE_ID` in its `config.h`:
 | Keeps rolling back | Self-test failing | Check Serial Monitor for which test says FAIL |
 | `Already on v1.1.0, skipping` | Already updated | Use a new version tag, or add `"force": true` |
 | Nothing in MQTT Explorer | Not connected or no messages yet | Press RST on ESP8266 to trigger a status message |
+| `REJECTED: No signature in payload` | MQTT message has no signature | Make sure `OTA_SIGNING_KEY` is set in GitHub Secrets |
+| `HMAC SIGNATURE MISMATCH` | Key on device doesn't match key in GitHub | Make sure both keys are identical. Re-flash device if needed. |
+| `signature_failed` in MQTT status | Signing verification failed | Check that `OTA_SIGNING_KEY` secret matches `config.h` exactly |
 
 ---
 
@@ -733,9 +899,9 @@ Each device needs a unique `DEVICE_ID` in its `config.h`:
 | File | Purpose | Push to GitHub? |
 |------|---------|-----------------|
 | `esp8266_ota_firmware.ino` | Main firmware — your code goes here | ✅ Yes |
-| `config.h` | Your WiFi/MQTT credentials | ❌ NO — stays local only |
+| `config.h` | Your WiFi/MQTT credentials + signing key | ❌ NO — stays local only |
 | `build-and-deploy.yml` | GitHub Actions CI/CD pipeline | ✅ Yes |
-| `mqtt_notify.py` | Script that sends MQTT notification | ✅ Yes |
+| `mqtt_notify.py` | Script that sends MQTT notification (with signing) | ✅ Yes |
 | `monitor_fleet.py` | Optional fleet monitoring dashboard | ✅ Yes |
 | `.gitignore` | Prevents config.h from being pushed | ✅ Yes |
 
@@ -758,6 +924,10 @@ git commit -m "describe your change"
 git tag v1.2.0
 git push origin main --tags
 
+# If remote has changes you don't have locally
+git pull origin main --no-rebase
+git push origin main
+
 # If you need to redo a tag (failed build, etc.)
 git tag -d v1.2.0                         # delete local tag
 git push origin :refs/tags/v1.2.0         # delete remote tag
@@ -770,4 +940,7 @@ git tag -l
 # Check push status
 git log --oneline -5
 git status
+
+# Generate a signing key
+openssl rand -hex 16
 ```
