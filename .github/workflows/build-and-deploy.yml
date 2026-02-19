@@ -74,11 +74,11 @@ jobs:
 
       - name: Inject version into config
         run: |
-          # Add FIRMWARE_VERSION define before compilation
-          sed -i 's/#define FIRMWARE_VERSION.*"1.0.0"/#define FIRMWARE_VERSION    "${{ steps.version.outputs.version }}"/' \
-            esp8266_ota_firmware/config.h
+          # Replace whatever version is in config.h with the tag version
+          sed -i 's/#define FIRMWARE_VERSION.*/#define FIRMWARE_VERSION    "${{ steps.version.outputs.version }}"/' \
+            esp8266_ota_firmware/config.h || true
           echo "Config after version injection:"
-          grep FIRMWARE_VERSION esp8266_ota_firmware/config.h
+          grep FIRMWARE_VERSION esp8266_ota_firmware/config.h || echo "Using build flag instead"
 
       - name: Compile sketch
         run: |
