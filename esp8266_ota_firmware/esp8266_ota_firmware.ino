@@ -284,8 +284,8 @@ void performOTA(const char* version, const char* url, const char* sha256, const 
 
   publishStatus("downloading", version);
 
-  // Save current version BEFORE attempting download (for recovery)
-  String previousVersion = getVersion();
+  // Prepare rollback BEFORE flashing
+  rollbackPrepare(version, sha256);
 
   // Setup HTTPS client for download
   BearSSL::WiFiClientSecure httpsClient;
@@ -309,6 +309,10 @@ void performOTA(const char* version, const char* url, const char* sha256, const 
       #if OTA_SIGNING_ENABLED
       if (signature) {
         publishStatus("verifying_signature", version);
+        // Note: We verify the HMAC of the payload fields as a simpler approach
+        // since reading back from flash partition is complex on ESP8266.
+        // The signature covers: version + sha256 + url
+        // This proves the MQTT message came from someone with the signing key.
         String signData = String(version) + "|" + String(sha256 ? sha256 : "") + "|" + String(url);
         String computed = computeHMAC((const uint8_t*)signData.c_str(), signData.length());
 
@@ -317,6 +321,8 @@ void performOTA(const char* version, const char* url, const char* sha256, const 
           Serial.printf("[OTA] Expected: %s\n", signature);
           Serial.printf("[OTA] Computed: %s\n", computed.c_str());
           publishStatus("signature_failed", "hmac_mismatch");
+          // Revert — don't boot into unverified firmware
+          rollbackConfirm(); // reset to previous state
           otaInProgress = false;
           return;
         }
@@ -324,14 +330,11 @@ void performOTA(const char* version, const char* url, const char* sha256, const 
       } else {
         Serial.println(F("[OTA] ⚠ No signature provided — rejecting (signing required)"));
         publishStatus("signature_failed", "no_signature");
+        rollbackConfirm();
         otaInProgress = false;
         return;
       }
       #endif
-
-      // Download + verification succeeded — NOW prepare rollback
-      // This is done AFTER download so EEPROM stays clean if download fails
-      rollbackPrepare(version, sha256);
 
       publishStatus("rebooting", version);
       mqttClient.loop();
@@ -347,12 +350,14 @@ void performOTA(const char* version, const char* url, const char* sha256, const 
                     ESPhttpUpdate.getLastErrorString().c_str());
       publishStatus("download_failed",
                      ESPhttpUpdate.getLastErrorString().c_str());
-      // EEPROM was NOT touched — version stays correct
+      // Revert EEPROM since flash didn't happen
+      rollbackConfirm();
       otaInProgress = false;
       break;
 
     case HTTP_UPDATE_NO_UPDATES:
       Serial.println(F("[OTA] No update (304)"));
+      rollbackConfirm();
       otaInProgress = false;
       break;
   }
@@ -422,14 +427,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 // SELF-TEST
 // ============================================================
 
-// bool runSelfTest() {
-//   Serial.println(F("\n[Self-Test] Running..."));
-//   publishStatus("self_test_running");
-//   bool pass = true;
-  bool runSelfTest() {
-    Serial.println(F("\n[Self-Test] INTENTIONALLY FAILING FOR ROLLBACK TEST"));
-    publishStatus("self_test_running");
-    bool pass = false;
+bool runSelfTest() {
+  Serial.println(F("\n[Self-Test] Running..."));
+  publishStatus("self_test_running");
+  bool pass = false;
 
   // Test 1: WiFi
   Serial.print(F("[Self-Test] WiFi... "));
